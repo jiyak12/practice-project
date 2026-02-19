@@ -1,123 +1,103 @@
 import streamlit as st
+import joblib
 import numpy as np
 import pandas as pd
-import pickle
+
+# ── PAGE CONFIG ───────────────────────────────────────────
+st.set_page_config(page_title="Diabetes Risk Predictor", page_icon="🩺", layout="centered")
 
 # ── LOAD ARTIFACTS ────────────────────────────────────────
-with open("model.pkl", "rb") as f:
-    model = pickle.load(f)
-with open("scaler.pkl", "rb") as f:
-    scaler = pickle.load(f)
-with open("feature_columns.pkl", "rb") as f:
-    feature_columns = pickle.load(f)
+model           = joblib.load("diabetes_model.pkl")
+scaler          = joblib.load("scaler.pkl")
+feature_columns = joblib.load("feature_columns.pkl")
 
-# ── RISK CATEGORISATION (from predict_proba) ──────────────
-def categorise_risk(probability):
-    if probability < 0.35:
-        return "🟢 Low Risk", "green", probability
-    elif probability < 0.65:
-        return "🟡 Moderate Risk", "orange", probability
-    else:
-        return "🔴 High Risk", "red", probability
-
-# ── FEATURE ENGINEERING (mirrors your notebook exactly) ───
-def engineer_features(input_dict):
-    df = pd.DataFrame([input_dict])
+# ── FEATURE ENGINEERING (mirrors notebook exactly) ────────
+def engineer_features(preg, glucose, bp, skin, insulin, bmi, dpf, age):
+    data = {
+        "Pregnancies": preg, "Glucose": glucose,
+        "BloodPressure": bp, "SkinThickness": skin,
+        "Insulin": insulin, "BMI": bmi,
+        "DiabetesPedigreeFunction": dpf, "Age": age
+    }
+    df = pd.DataFrame([data])
 
     # BMI category
-    def bmi_category(bmi):
-        if bmi < 18.5:       return "Underweight"
-        elif bmi <= 24.9:    return "Normal"
-        elif bmi <= 29.9:    return "Overweight"
-        elif bmi <= 34.9:    return "Obesity 1"
-        elif bmi <= 39.9:    return "Obesity 2"
-        else:                return "Obesity 3"
+    def bmi_cat(b):
+        if b < 18.5:         return "Underweight"
+        elif b <= 24.9:      return "Normal"
+        elif b <= 29.9:      return "Overweight"
+        elif b <= 34.9:      return "Obesity_1"
+        elif b <= 39.9:      return "Obesity_2"
+        else:                return "Obesity_3"
 
-    df["NewBMI"] = df["BMI"].apply(bmi_category)
+    df["NewBMI"] = df["BMI"].apply(bmi_cat)
 
-    # Glucose category
+    # Interaction features
+    df["NEW_g_p"] = df["Glucose"] * df["Pregnancies"]
+    df["NEW_i_g"] = df["Glucose"] * df["Insulin"]
+
+    # Glucose bands
     df["New_Glucose"] = pd.cut(
-        df["Glucose"],
-        bins=[0, 74, 99, 139, 200],
+        df["Glucose"], bins=[0, 74, 99, 139, 200],
         labels=["Low", "Normal", "Overweight", "High"]
-    )
-    df["New_Glucose"] = df["New_Glucose"].astype(str)
+    ).astype(str)
 
     # Insulin score
-    df["NewInsulinScore"] = df["Insulin"].apply(
-        lambda x: "Normal" if 16 <= x <= 166 else "Abnormal"
-    )
+    df["NewInsulinScore"] = "Normal" if 16 <= insulin <= 166 else "Abnormal"
 
-    # One-hot encode (drop_first=True, same as training)
-    categorical_columns = ["NewBMI", "New_Glucose", "NewInsulinScore"]
-    df = pd.get_dummies(df, columns=categorical_columns, drop_first=True)
+    # One-hot encode
+    cat_cols = ["NewBMI", "New_Glucose", "NewInsulinScore"]
+    df = pd.get_dummies(df, columns=cat_cols, drop_first=True)
     df.columns = df.columns.str.replace(" ", "_")
 
-    # Align to training columns — fill missing OHE columns with 0
+    # Align to training columns — missing OHE cols become 0
     for col in feature_columns:
         if col not in df.columns:
             df[col] = 0
 
-    return df[feature_columns]  # same column order as training
+    return df[feature_columns]
+
+# ── RISK LABEL ────────────────────────────────────────────
+def categorise_risk(prob):
+    if prob < 0.30:
+        return "🟢 Low Risk", "success"
+    elif prob < 0.70:
+        return "🟡 Moderate Risk", "warning"
+    else:
+        return "🔴 High Risk", "error"
 
 # ── UI ────────────────────────────────────────────────────
-st.set_page_config(page_title="Diabetes Risk Predictor", page_icon="🩺")
-st.title("🩺 Diabetes Risk Predictor")
-st.markdown("Enter the patient's medical details below to assess their diabetes risk.")
-st.divider()
+st.title("🩺 Diabetes Risk Prediction System")
+st.markdown("Predict the probability of diabetes using medical parameters.")
+st.markdown("---")
 
-col1, col2 = st.columns(2)
+st.sidebar.header("Enter Patient Details")
+pregnancies    = st.sidebar.slider("Pregnancies",                  0,   20,  1)
+glucose        = st.sidebar.slider("Glucose Level",                0,  200, 100)
+blood_pressure = st.sidebar.slider("Blood Pressure",               0,  150,  70)
+skin_thickness = st.sidebar.slider("Skin Thickness",               0,  100,  20)
+insulin        = st.sidebar.slider("Insulin",                      0,  900,  80)
+bmi            = st.sidebar.slider("BMI",                        0.0, 70.0, 25.0)
+dpf            = st.sidebar.slider("Diabetes Pedigree Function", 0.0,  3.0,  0.5)
+age            = st.sidebar.slider("Age",                         21,  120,  30)
 
-with col1:
-    pregnancies     = st.number_input("Pregnancies",         min_value=0,    max_value=20,   value=1)
-    glucose         = st.number_input("Glucose (mg/dL)",     min_value=0,    max_value=300,  value=110)
-    blood_pressure  = st.number_input("Blood Pressure (mmHg)", min_value=0,  max_value=200,  value=72)
-    skin_thickness  = st.number_input("Skin Thickness (mm)", min_value=0,    max_value=100,  value=20)
-
-with col2:
-    insulin         = st.number_input("Insulin (mu U/ml)",   min_value=0,    max_value=900,  value=80)
-    bmi             = st.number_input("BMI",                 min_value=0.0,  max_value=70.0, value=25.0, format="%.1f")
-    dpf             = st.number_input("Diabetes Pedigree Function", min_value=0.0, max_value=3.0, value=0.5, format="%.3f")
-    age             = st.number_input("Age",                 min_value=21,   max_value=120,  value=30)
-
-st.divider()
-
-if st.button("🔍 Predict Risk", use_container_width=True):
-
-    input_dict = {
-        "Pregnancies": pregnancies,
-        "Glucose": glucose,
-        "BloodPressure": blood_pressure,
-        "SkinThickness": skin_thickness,
-        "Insulin": insulin,
-        "BMI": bmi,
-        "DiabetesPedigreeFunction": dpf,
-        "Age": age
-    }
-
-    # Pipeline: engineer → scale → predict
-    X_input = engineer_features(input_dict)
+if st.button("🔍 Predict Risk"):
+    X_input  = engineer_features(pregnancies, glucose, blood_pressure,
+                                  skin_thickness, insulin, bmi, dpf, age)
     X_scaled = scaler.transform(X_input)
-    probability = model.predict_proba(X_scaled)[0][1]  # prob of diabetes
 
-    label, colour, prob = categorise_risk(probability)
+    probability = model.predict_proba(X_scaled)[0][1]
+    label, level = categorise_risk(probability)
 
-    # ── RESULTS ───────────────────────────────────────────
-    st.subheader("Result")
-    st.markdown(f"### {label}", unsafe_allow_html=False)
-    st.progress(float(probability))
-    st.metric("Diabetes Probability", f"{probability:.1%}")
+    st.markdown("## 📊 Prediction Result")
+    st.progress(int(probability * 100))
 
-    if colour == "green":
-        st.success("Low probability of diabetes. Maintain a healthy lifestyle.")
-    elif colour == "orange":
-        st.warning("Moderate risk detected. Consider consulting a healthcare professional.")
+    if level == "success":
+        st.success(f"{label}  —  {probability*100:.2f}%")
+    elif level == "warning":
+        st.warning(f"{label}  —  {probability*100:.2f}%")
     else:
-        st.error("High risk detected. Please seek medical advice promptly.")
+        st.error(f"{label}  —  {probability*100:.2f}%")
 
-    with st.expander("📊 Probability Breakdown"):
-        st.write(f"- **Low Risk threshold** : < 35% → Your score: `{probability:.1%}`")
-        st.write(f"- **Moderate Risk threshold** : 35% – 65% → Your score: `{probability:.1%}`")
-        st.write(f"- **High Risk threshold** : > 65% → Your score: `{probability:.1%}`")
-
-    st.caption("⚠️ This tool is for informational purposes only and is not a clinical diagnosis.")
+st.markdown("---")
+st.caption("⚠️ Disclaimer: For educational purposes only. Not a substitute for medical advice.")
